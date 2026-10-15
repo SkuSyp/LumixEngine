@@ -20,6 +20,8 @@
 #include "editor/world_editor.h"
 #include "evox/evox_module.h"
 #include "evox/evox_capi.gen.h"
+#include "renderer/render_module.h"
+#include <float.h>
 #include "core/array.h"
 #include "core/stream.h"
 #include "../../external/evox/capi.h"
@@ -1820,6 +1822,55 @@ struct EvoxRenderTemplatePlugin final : StudioApp::GUIPlugin {
 	StudioApp& m_app;
 };
 
+static bool nameStartsWith(const char* name, const char* prefix) {
+	if (!name) return false;
+	while (*prefix) {
+		if (*name++ != *prefix++) return false;
+	}
+	return true;
+}
+
+// ZGame level helper: in the scene view, draw a line from every flag* entity to the factories / turrets that belong to it
+// (the nearest flag on the XZ plane, like the game does). Colour: flag_player blue, flag_enemy red, other flags grey.
+static void drawZGameFlagLinks(World& world) {
+	RenderModule* module = (RenderModule*)world.getModule("renderer");
+	if (!module) return;
+
+	constexpr u32 MAX_ENTITIES = 512;
+	EntityRef flags[MAX_ENTITIES];
+	EntityRef buildings[MAX_ENTITIES];
+	u32 flag_count = 0;
+	u32 building_count = 0;
+	for (EntityPtr e = world.getFirstEntity(); e.isValid(); e = world.getNextEntity(*e)) {
+		const char* name = world.getEntityName(*e);
+		if (nameStartsWith(name, "flag")) {
+			if (flag_count < MAX_ENTITIES) flags[flag_count++] = *e;
+		}
+		else if (nameStartsWith(name, "robot_factory") || nameStartsWith(name, "vehicle_factory") || nameStartsWith(name, "gun_turret")) {
+			if (building_count < MAX_ENTITIES) buildings[building_count++] = *e;
+		}
+	}
+	if (!flag_count) return;
+
+	// signal lamp of assets/Flag.fbx relative to the flag position, same numbers as FLAG_SIGNAL_D* in scripts/gfx.evox
+	const DVec3 lamp_offset(0.0, 0.5, -2.0);
+	for (u32 i = 0; i < building_count; ++i) {
+		const DVec3 bp = world.getPosition(buildings[i]);
+		u32 best = 0;
+		double best_d = DBL_MAX;
+		for (u32 j = 0; j < flag_count; ++j) {
+			const DVec3 fp = world.getPosition(flags[j]);
+			const double d = (fp.x - bp.x) * (fp.x - bp.x) + (fp.z - bp.z) * (fp.z - bp.z);
+			if (d < best_d) { best_d = d; best = j; }
+		}
+		const char* flag_name = world.getEntityName(flags[best]);
+		Color color(150, 150, 150, 255);
+		if (nameStartsWith(flag_name, "flag_player")) color = Color(70, 140, 255, 255);
+		else if (nameStartsWith(flag_name, "flag_enemy")) color = Color(255, 70, 60, 255);
+		module->addDebugLine(world.getPosition(flags[best]) + lamp_offset, DVec3(bp.x, 0.3, bp.z), color);
+	}
+}
+
 struct EvoxPlugin : StudioApp::IPlugin {
 	explicit EvoxPlugin(StudioApp& app)
 		: m_app(app)
@@ -1874,6 +1925,8 @@ struct EvoxPlugin : StudioApp::IPlugin {
 		World* world = m_app.getWorldEditor().getWorld();
 		EvoxModule* module = world ? static_cast<EvoxModule*>(world->getModule("evox")) : nullptr;
 		ex_task* task = module ? module->getTask() : nullptr;
+
+		if (world && !m_app.getWorldEditor().isGameMode()) drawZGameFlagLinks(*world);
 
 		if (task && isDebuggerSuspended(*task)) {
 			if (m_app.checkShortcut(g_debugger_continue, true)) { ex_debug_resume(task, EX_DEBUG_CONTINUE); m_debugger.m_step_requested = true; }
