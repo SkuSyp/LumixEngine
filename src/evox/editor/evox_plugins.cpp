@@ -22,6 +22,7 @@
 #include "evox/evox_capi.gen.h"
 #include "renderer/render_module.h"
 #include <float.h>
+#include <math.h>
 #include "core/array.h"
 #include "core/stream.h"
 #include "../../external/evox/capi.h"
@@ -1871,6 +1872,42 @@ static void drawZGameFlagLinks(World& world) {
 	}
 }
 
+// ZGame level helper: weapon range of the unit a marker stands for (spawn_<unit> markers and the abandoned vehicle markers), same
+// numbers as s_range in ZGame's scripts/data.evox. Returns 0 for any other name.
+static float getZGameUnitRange(const char* name) {
+	struct Unit { const char* name; float range; };
+	static const Unit units[] = {
+		{"grunt", 7.f}, {"psycho", 7.5f}, {"tough", 9.f}, {"sniper", 15.f}, {"pyro", 4.2f}, {"laser", 11.f},
+		{"jeep", 8.f}, {"light_tank", 10.5f}, {"medium_tank", 11.5f}, {"heavy_tank", 12.5f}, {"missile_launcher", 20.f}
+	};
+	if (nameStartsWith(name, "spawn_")) name += 6;
+	else if (nameStartsWith(name, "spawn")) return 0;
+	for (const Unit& u : units) {
+		if (nameStartsWith(name, u.name)) return u.range;
+	}
+	return 0;
+}
+
+// ZGame level helper: in the scene view, a yellow circle (debug lines) around every spawn_* / abandoned vehicle marker, radius = the
+// weapon range of that unit. The game draws the same circles around every living unit (drawRangeCircles in ZGame's main.evox).
+static void drawZGameUnitRanges(World& world) {
+	RenderModule* module = (RenderModule*)world.getModule("renderer");
+	if (!module) return;
+	constexpr int SEGMENTS = 48;
+	for (EntityPtr e = world.getFirstEntity(); e.isValid(); e = world.getNextEntity(*e)) {
+		const float r = getZGameUnitRange(world.getEntityName(*e));
+		if (r <= 0) continue;
+		const DVec3 c = world.getPosition(*e);
+		DVec3 prev(c.x + r, 0.15, c.z);
+		for (int s = 1; s <= SEGMENTS; ++s) {
+			const float a = s * (2.f * 3.14159265f / SEGMENTS);
+			const DVec3 next(c.x + r * cosf(a), 0.15, c.z + r * sinf(a));
+			module->addDebugLine(prev, next, Color(255, 230, 60, 255));
+			prev = next;
+		}
+	}
+}
+
 struct EvoxPlugin : StudioApp::IPlugin {
 	explicit EvoxPlugin(StudioApp& app)
 		: m_app(app)
@@ -1926,7 +1963,7 @@ struct EvoxPlugin : StudioApp::IPlugin {
 		EvoxModule* module = world ? static_cast<EvoxModule*>(world->getModule("evox")) : nullptr;
 		ex_task* task = module ? module->getTask() : nullptr;
 
-		if (world && !m_app.getWorldEditor().isGameMode()) drawZGameFlagLinks(*world);
+		if (world && !m_app.getWorldEditor().isGameMode()) { drawZGameFlagLinks(*world); drawZGameUnitRanges(*world); }
 
 		if (task && isDebuggerSuspended(*task)) {
 			if (m_app.checkShortcut(g_debugger_continue, true)) { ex_debug_resume(task, EX_DEBUG_CONTINUE); m_debugger.m_step_requested = true; }
